@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>타기론 온라인</title>
+  <style>
+    body { font-family: sans-serif; text-align: center; margin-top: 40px; }
+    .hidden { display: none; }
+    .question-cards { display: flex; justify-content: center; flex-wrap: wrap; gap: 10px; margin: 20px 0; }
+    .card { border: 2px solid #333; padding: 15px 20px; border-radius: 8px; background: #f3f3f3; cursor: pointer; width: 160px; }
+    .card.disabled { background: #ccc; cursor: not-allowed; }
+    .btn { padding: 10px 20px; margin: 10px; font-size: 16px; cursor: pointer; }
+  </style>
+  <script src="https://www.gstatic.com/firebasejs/9.6.10/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.6.10/firebase-database-compat.js"></script>
+</head>
+<body>
+  <h1>🧠 타기론 2인 온라인 게임</h1>
+
+  <div id="setup">
+    <input id="room" placeholder="방 코드 입력" />
+    <button class="btn" onclick="joinGame()">게임 시작</button>
+  </div>
+
+  <div id="game" class="hidden">
+    <p><strong>내 숫자:</strong> <span id="myNumbers"></span></p>
+    <p>현재 차례: <span id="turnDisplay"></span></p>
+
+    <div class="question-cards" id="questionCards"></div>
+
+    <div id="answerSection" class="hidden">
+      <p id="receivedQuestion"></p>
+      <input id="answerInput" placeholder="답변 입력" />
+      <button class="btn" onclick="submitAnswer()">답변 제출</button>
+    </div>
+
+    <div>
+      <input id="guess" placeholder="상대 숫자 추측 (예: 3,5,7)" />
+      <button class="btn" onclick="submitGuess()">정답 맞추기</button>
+    </div>
+
+    <div>
+      <h3>질문 기록</h3>
+      <ul id="log"></ul>
+    </div>
+  </div>
+
+  <script>
+    const firebaseConfig = {
+      apiKey: "AIzaSyD6kcJbMZ6hrh2iueE9-BnJWAKcR5Yg5EE",
+      authDomain: "tagiron-online.firebaseapp.com",
+      databaseURL: "https://tagiron-online-default-rtdb.firebaseio.com",
+      projectId: "tagiron-online",
+      storageBucket: "tagiron-online.appspot.com",
+      messagingSenderId: "725290279395",
+      appId: "1:725290279395:web:1a514f1122c562c5a5c0d6"
+    };
+
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+
+    let roomId = "";
+    let player = "";
+    let myNumbers = [];
+    let isMyTurn = false;
+
+    const questions = [
+      "짝수는 몇 개?",
+      "가장 큰 수는?",
+      "합은 얼마?",
+      "작은 수는 몇 개인가요?",
+      "숫자 순서는 오름차순인가요?",
+      "같은 숫자가 있나요?"
+    ];
+
+    function joinGame() {
+      roomId = document.getElementById("room").value;
+      if (!roomId) return;
+      const roomRef = db.ref("games/" + roomId);
+
+      roomRef.once("value", (snap) => {
+        const data = snap.val();
+        player = data && data.player1 ? "player2" : "player1";
+        myNumbers = Array.from({length: 3}, () => Math.floor(Math.random() * 10));
+
+        roomRef.child(player).set({ numbers: myNumbers });
+        roomRef.child("turn").set("player1");
+        roomRef.child("questionCards").set(questions);
+
+        document.getElementById("setup").classList.add("hidden");
+        document.getElementById("game").classList.remove("hidden");
+        document.getElementById("myNumbers").textContent = myNumbers.join(", ");
+
+        roomRef.on("value", (snap) => {
+          const game = snap.val();
+          if (!game) return;
+          isMyTurn = game.turn === player;
+          document.getElementById("turnDisplay").textContent = isMyTurn ? "내 차례" : "상대 차례";
+          renderQuestionCards(game.questionCards);
+          renderLog(game.questionLog);
+
+          if (game.pendingQuestion && game.pendingQuestion.to === player && !game.pendingQuestion.answered) {
+            document.getElementById("answerSection").classList.remove("hidden");
+            document.getElementById("receivedQuestion").textContent = `질문: ${game.pendingQuestion.question}`;
+          } else {
+            document.getElementById("answerSection").classList.add("hidden");
+          }
+        });
+      });
+    }
+
+    function renderQuestionCards(cards) {
+      const container = document.getElementById("questionCards");
+      container.innerHTML = "";
+      if (!cards) return;
+
+      cards.forEach((q, idx) => {
+        const btn = document.createElement("div");
+        btn.className = "card" + (!isMyTurn ? " disabled" : "");
+        btn.textContent = q;
+        if (isMyTurn) {
+          btn.onclick = () => selectQuestion(q, idx);
+        }
+        container.appendChild(btn);
+      });
+    }
+
+    function selectQuestion(question, index) {
+      if (!isMyTurn) return;
+      const toPlayer = player === "player1" ? "player2" : "player1";
+      const ref = db.ref("games/" + roomId);
+      ref.child("pendingQuestion").set({ from: player, to: toPlayer, question, index, answered: false });
+    }
+
+    function submitAnswer() {
+      const answer = document.getElementById("answerInput").value;
+      if (!answer) return;
+      const ref = db.ref("games/" + roomId);
+      ref.once("value", (snap) => {
+        const game = snap.val();
+        if (!game || !game.pendingQuestion) return;
+
+        const entry = {
+          from: game.pendingQuestion.from,
+          question: game.pendingQuestion.question,
+          answer
+        };
+
+        ref.child("questionLog").push(entry);
+        ref.child("pendingQuestion").remove();
+
+        // 질문 카드를 한 장 교체
+        const cards = game.questionCards || [];
+        cards.splice(game.pendingQuestion.index, 1, questions[Math.floor(Math.random() * questions.length)]);
+        ref.child("questionCards").set(cards);
+
+        // 턴 전환
+        ref.child("turn").set(game.pendingQuestion.to);
+      });
+    }
+
+    function submitGuess() {
+      const guess = document.getElementById("guess").value;
+      if (confirm(`상대 숫자가 [${guess}] 맞나요?`)) {
+        alert("🎉 게임 종료! 당신이 이겼습니다!");
+        db.ref("games/" + roomId).remove();
+        location.reload();
+      }
+    }
+
+    function renderLog(log) {
+      const ul = document.getElementById("log");
+      ul.innerHTML = "";
+      if (!log) return;
+      Object.values(log).forEach(entry => {
+        const li = document.createElement("li");
+        li.textContent = `${entry.from} → ${entry.question}: ${entry.answer}`;
+        ul.appendChild(li);
+      });
+    }
+  </script>
+</body>
+</html>
